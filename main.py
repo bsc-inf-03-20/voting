@@ -1,29 +1,41 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, status
 from pydantic import BaseModel
-from typing import List
+from typing import Optional
 from sqlalchemy import create_engine, Column, String, Boolean
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
-from auth  import hash_pin, verify_pin
-from models import Voter
+from auth import (
+    hash_pin, 
+    verify_pin, 
+    create_access_token, 
+    verify_token,
+    get_current_user,
+    SECRET_KEY,
+    ALGORITHM,
+    ACCESS_TOKEN_EXPIRE_MINUTES
+)
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from datetime import timedelta
 import hashlib
 import json
-from time import time
 from blockchain import Blockchain
+from time import time
+import os
 
 app = FastAPI()
-# Base.metadata.create_all(bind=engine)
-
-blockchain = Blockchain()
 
 # ---------------------------
 # SQLite + SQLAlchemy Setup
 # ---------------------------
 
 DATABASE_URL = "sqlite:///./voters.db"
-
+if os.path.exists("voters.db"):
+    os.remove("voters.db")  # Remove existing database for fresh start
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
+
+# OAuth2 scheme
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
 # ---------------------------
 # Voter Database Model
@@ -33,6 +45,8 @@ class Voter(Base):
     __tablename__ = "voters"
 
     voter_id = Column(String, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True)
+    hashed_pin = Column(String)
     name = Column(String)
     has_voted = Column(Boolean, default=False)
 
@@ -46,65 +60,9 @@ def get_db():
     finally:
         db.close()
 
-# Session (simulate)
-logged_in_users = {}
-
-# Pydantic Schemas
-class RegisterSchema(BaseModel):
-    username: str
-    pin: str
-
-class LoginSchema(BaseModel):
-    username: str
-    pin: str
-
-class VoteSchema(BaseModel):
-    username: str
-    candidate: str
-
 # ---------------------------
 # Blockchain Voting System
 # ---------------------------
-
-class Blockchain:
-    def __init__(self):
-        self.chain = []
-        self.current_votes = []
-        self.create_block(previous_hash='1')  # Genesis block
-
-    def create_block(self, previous_hash):
-        block = {
-            'index': len(self.chain) + 1,
-            'timestamp': time(),
-            'votes': self.current_votes,
-            'previous_hash': previous_hash,
-        }
-        block['hash'] = self.hash_block(block)
-        self.chain.append(block)
-        self.current_votes = []
-        return block
-
-    def add_vote(self, voter_id, candidate):
-        vote = {'voter_id': voter_id, 'candidate': candidate}
-        self.current_votes.append(vote)
-        return vote
-
-    def hash_block(self, block):
-        block_copy = block.copy()
-        block_copy.pop('hash', None)
-        block_string = json.dumps(block_copy, sort_keys=True).encode()
-        return hashlib.sha256(block_string).hexdigest()
-
-    def get_last_block(self):
-        return self.chain[-1]
-
-    def count_votes(self):
-        tally = {}
-        for block in self.chain:
-            for vote in block['votes']:
-                candidate = vote['candidate']
-                tally[candidate] = tally.get(candidate, 0) + 1
-        return tally
 
 blockchain = Blockchain()
 
@@ -114,10 +72,15 @@ blockchain = Blockchain()
 
 class RegisterVoter(BaseModel):
     voter_id: str
+    username: str
+    pin: str
     name: str
 
+class LoginSchema(BaseModel):
+    username: str
+    pin: str
+
 class VoteInput(BaseModel):
-    voter_id: str
     candidate: str
 
 # ---------------------------
@@ -130,36 +93,96 @@ def root():
 
 @app.post("/register")
 def register_voter(voter: RegisterVoter, db: Session = Depends(get_db)):
-    existing = db.query(Voter).filter(Voter.voter_id == voter.voter_id).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Voter already registered.")
-    new_voter = Voter(voter_id=voter.voter_id, name=voter.name)
+    # Check if voter_id or username already exists
+    existing_id = db.query(Voter).filter(Voter.voter_id == voter.voter_id).first()
+    existing_user = db.query(Voter).filter(Voter.username == voter.username).first()
+    
+    if existing_id:
+        raise HTTPException(status_code=400, detail="Voter ID already registered.")
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Username already taken.")
+    
+    # Hash the PIN
+    hashed_pin = hash_pin(voter.pin)
+    
+    new_voter = Voter(
+        voter_id=voter.voter_id,
+        username=voter.username,
+        hashed_pin=hashed_pin,
+        name=voter.name,
+        has_voted=False
+    )
+    
     db.add(new_voter)
     db.commit()
-    return {"message": "Voter registered successfully", "voter_id": voter.voter_id}
+    return {
+        "message": "Voter registered successfully",
+        "voter_id": voter.voter_id,
+        "username": voter.username
+    }
 
-@app.post("/login")
-def login(credentials: LoginSchema, db: Session = Depends(get_db)):
-    user = db.query(Voter).filter(Voter.username == credentials.username).first()
-    if not user or not verify_pin(credentials.pin, user.hashed_pin):
-        raise HTTPException(status_code=401, detail="Invalid credentials")
+@app.post("/token")
+async def login_for_access_token(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db)
+):
+    user = db.query(Voter).filter(Voter.username == form_data.username).first()
+    if not user or not verify_pin(form_data.password, user.hashed_pin):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     
-    # Simulated session
-    logged_in_users[credentials.username] = True
-    return {"message": "Login successful."}
+    access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    access_token = create_access_token(
+        data={"sub": user.username},
+        expires_delta=access_token_expires
+    )
+    
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "username": user.username,
+        "voter_id": user.voter_id
+    }
 
 @app.post("/vote")
-def vote(vote: VoteInput, db: Session = Depends(get_db)):
-    voter = db.query(Voter).filter(Voter.voter_id == vote.voter_id).first()
+def vote(
+    vote: VoteInput,
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    voter = db.query(Voter).filter(Voter.username == current_user).first()
     if not voter:
-        raise HTTPException(status_code=404, detail="Voter not registered.")
+        raise HTTPException(status_code=404, detail="Voter not found.")
     if voter.has_voted:
         raise HTTPException(status_code=400, detail="Voter has already voted.")
     
-    blockchain.add_vote(vote.voter_id, vote.candidate)
+    blockchain.add_vote(voter.voter_id, current_user, vote.candidate)
     voter.has_voted = True
     db.commit()
-    return {"message": "Vote cast successfully", "voter_id": vote.voter_id}
+    
+    return {
+        "message": "Vote cast successfully",
+        "voter_id": voter.voter_id,
+        "candidate": vote.candidate
+    }
+
+@app.get("/users/me")
+async def read_users_me(
+    current_user: str = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    user = db.query(Voter).filter(Voter.username == current_user).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {
+        "voter_id": user.voter_id,
+        "username": user.username,
+        "name": user.name,
+        "has_voted": user.has_voted
+    }
 
 @app.post("/mine")
 def mine_block():
