@@ -5,9 +5,7 @@ from passlib.context import CryptContext
 from typing import Optional
 
 # Security settings
-SECRET_KEY = "blockvotechaning"  # Change this to a strong secret key
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+from config import SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES
 
 # Password hashing context
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
