@@ -46,14 +46,14 @@ class Blockchain:
         self.current_votes = []  # Clear current votes after mining
         return block
 
-    def add_vote(self, voter_id, username, candidate):
-        if not all(isinstance(x, str) for x in [voter_id, username, candidate]):
+    def add_vote(self, member_id, username, candidate):
+        if not all(isinstance(x, str) for x in [member_id, username, candidate]):
             raise ValueError("All vote parameters must be strings")
             
         # Debug print to verify votes are being added
-        print(f"Adding vote: {voter_id}, {username}, {candidate}")
+        print(f"Adding vote: {member_id}, {username}, {candidate}")
         vote = {
-            'voter_id': voter_id,
+            'member_id': member_id,
             'username': username,
             'candidate': candidate,
             'timestamp': time()
