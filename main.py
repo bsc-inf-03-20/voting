@@ -19,7 +19,17 @@ from blockchain import Blockchain
 import models
 models.Base.metadata.create_all(bind=engine)
 
+from fastapi.middleware.cors import CORSMiddleware
+
 app = FastAPI()
+# initialise CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for simplicity, adjust in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 blockchain = Blockchain()
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
