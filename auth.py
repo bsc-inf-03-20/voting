@@ -76,9 +76,12 @@ def get_current_user(
     
     return user
 
-def is_admin(username: str, db: Session) -> bool:
+def is_admin(user: Member) -> bool:
     """Check if user is admin"""
-    # Implement your admin check logic here
-    # Example: Check if username is in admin list or has admin role
-    admin_users = ["admin1", "admin2"]  # Replace with your admin usernames
-    return username in admin_users
+    return user.is_admin if user else False
+
+    # user = db.query(Member).filter(Member.username == username).first()
+    # if not user:
+    #     raise HTTPException(status_code=404, detail="User not found")
+    
+    # return user.is_admin

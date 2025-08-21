@@ -8,8 +8,8 @@ import os
 # ---------------------------
 
 DATABASE_URL = "sqlite:///./members.db"
-if os.path.exists("members.db"):
-    os.remove("members.db")  # Remove existing database for fresh start
+# if os.path.exists("members.db"):
+#     os.remove("members.db")  # Remove existing database for fresh start
 engine = create_engine(
     DATABASE_URL,
     connect_args={"check_same_thread": False},

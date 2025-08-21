@@ -5,7 +5,6 @@ from pydantic import BaseModel, validator
 from datetime import timedelta
 from typing import Optional
 from time import time
-
 from database import SessionLocal, engine
 from models import Member  # Changed from Voter to Member
 from auth import (
@@ -40,6 +39,45 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def create_initial_admin():
+    db = SessionLocal()
+    try:
+        admin = db.query(Member).filter(Member.username == "admin").first()
+        if not admin:
+            print("Creating initial admin account...")
+            # Create a hashed password for the admin
+            hashed_pw = hash_password("admin123")
+            admin = Member(
+                username="admin",
+                hashed_password=hashed_pw,  # Use hashed password
+                full_name="System Admin",
+                is_admin=True,
+                is_verified=True
+            )
+            db.add(admin)
+            db.commit()
+            print("Initial admin account created successfully")
+        else:
+            print("Admin account already exists")
+    except Exception as e:
+        print(f"Error creating admin: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+# Call this during startup
+create_initial_admin()
+
+# Call this during startup
+with SessionLocal() as db:
+    admin = db.query(Member).filter(Member.username == "admin").first()
+    if admin:
+        admin.is_verified = True
+        db.commit()
+        print("Admin verified!")
+    else:
+        print("Admin not found.")
 
 # Pydantic schemas
 class RegisterMember(BaseModel):
@@ -93,7 +131,7 @@ def register_admin(
     return {"message": "Admin account created"}
 
 @app.post("/register")
-def register(member: RegisterMember, db: Session = Depends(get_db)):
+async def register(member: RegisterMember, db: Session = Depends(get_db)):
     existing_member = db.query(Member).filter(Member.username == member.username).first()
     if existing_member:
         raise HTTPException(status_code=400, detail="Username already exists")
@@ -112,6 +150,28 @@ def register(member: RegisterMember, db: Session = Depends(get_db)):
     
     return {"message": "Registration submitted for verification", "member_id": new_member.id}
 
+@app.get("/admin/members")
+def get_all_members(
+    current_user: Member = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    all_members = db.query(Member).order_by(Member.created_at.desc()).all()
+    return [
+        {
+            "id": m.id,
+            "username": m.username,
+            "full_name": m.full_name,
+            "is_verified": m.is_verified,
+            "has_voted": m.has_voted,
+            "is_admin": m.is_admin,
+            "created_at": m.created_at.isoformat() if m.created_at else None
+        }
+        for m in all_members
+    ]
+
 @app.patch("/verify-member/{member_id}")
 def verify_member(
     member_id: int,
@@ -119,7 +179,8 @@ def verify_member(
     current_user: Member = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    if not is_admin(current_user, db):
+    print(f"Admin {current_user.username} is verifying member {member_id} with data: {verification}")
+    if not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     member = db.query(Member).filter(Member.id == member_id).first()
@@ -168,7 +229,7 @@ def login(
 @app.post("/vote")
 def vote(
     vote_data: VoteInput,
-    current_user: str = Depends(get_current_user),
+    current_user: Member = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     member = db.query(Member).filter(Member.username == current_user).first()
@@ -202,7 +263,7 @@ def vote(
 
 @app.get("/members/me")
 def get_profile(
-    current_user: str = Depends(get_current_user),
+    current_user: Member = Depends(get_current_user),
     # db: Session = Depends(get_db)
 ):
     # member = db.query(Member).filter(Member.username == current_user).first()
@@ -220,8 +281,8 @@ def get_profile(
     }
 
 @app.post("/mine")
-def mine_block(current_user: str = Depends(get_current_user), db: Session = Depends(get_db)):
-    if not is_admin(current_user, db):
+def mine_block(current_user: Member = Depends(get_current_user), db: Session = Depends(get_db)):
+    if not is_admin(current_user):
         raise HTTPException(status_code=403, detail="Admin access required")
     
     if not blockchain.current_votes:
